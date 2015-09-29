@@ -2,18 +2,18 @@
 
 import re
 
-from module.plugins.captcha.ReCaptcha import ReCaptcha
+from time import sleep
+
+from module.plugins.internal.CaptchaService import ReCaptcha
 from module.plugins.internal.SimpleHoster import SimpleHoster, create_getInfo
 
 
 class UploadableCh(SimpleHoster):
     __name__    = "UploadableCh"
     __type__    = "hoster"
-    __version__ = "0.12"
-    __status__  = "testing"
+    __version__ = "0.02"
 
     __pattern__ = r'http://(?:www\.)?uploadable\.ch/file/(?P<ID>\w+)'
-    __config__  = [("use_premium", "bool", "Use premium account if available", True)]
 
     __description__ = """Uploadable.ch hoster plugin"""
     __license__     = "GPLv3"
@@ -21,57 +21,70 @@ class UploadableCh(SimpleHoster):
                        ("Walter Purcaro", "vuolter@gmail.com")]
 
 
-    URL_REPLACEMENTS = [(__pattern__ + ".*", r'http://www.uploadable.ch/file/\g<ID>')]
-
-    INFO_PATTERN = r'div id=\"file_name\" title=.*>(?P<N>.+)<span class=\"filename_normal\">\((?P<S>[\d.]+) (?P<U>\w+)\)</span><'
+    FILE_INFO_PATTERN = r'div id=\"file_name\" title=.*>(?P<N>.+)<span class=\"filename_normal\">\((?P<S>[\d.]+) (?P<U>\w+)\)</span><'
 
     OFFLINE_PATTERN      = r'>(File not available|This file is no longer available)'
     TEMP_OFFLINE_PATTERN = r'<div class="icon_err">'
 
-    WAIT_PATTERN = r'>Please wait.+?<'
+    #WAIT_PATTERN = r'data-time="(\d+)" data-format'
 
-    RECAPTCHA_KEY = "6LdlJuwSAAAAAPJbPIoUhyqOJd7-yrah5Nhim5S3"
+    FILE_URL_REPLACEMENTS = [(__pattern__ + ".*", r'http://www.uploadable.ch/file/\g<ID>')]
 
 
-    def handle_free(self, pyfile):
-        #: Click the "free user" button and wait
-        a = self.load(pyfile.url, post={'downloadLink': "wait"})
-        self.log_debug(a)
+    def setup(self):
+        self.multiDL    = False
+        self.chunkLimit = 1
 
+
+    def handleFree(self):
+        # Click the "free user" button and wait
+        a = self.load(self.pyfile.url, cookies=True, post={'downloadLink': "wait"}, decode=True)
+        self.logDebug(a)
+
+        #m = re.search(self.WAIT_PATTERN, a)
+        #if m is not None:
+        #    self.wait(int(m.group(1)))  #: Expected output: {"waitTime":30}
         self.wait(30)
+        #else:
+        #    self.error("WAIT_PATTERN")
 
-        #: Make the recaptcha appear and show it the pyload interface
-        b = self.load(pyfile.url, post={'checkDownload': "check"})
-        self.log_debug(b)  #: Expected output: {'success': "showCaptcha"}
+        # Make the recaptcha appear and show it the pyload interface
+        b = self.load(self.pyfile.url, cookies=True, post={'checkDownload': "check"}, decode=True)
+        self.logDebug(b)  #: Expected output: {"success":"showCaptcha"}
 
         recaptcha = ReCaptcha(self)
 
-        response, challenge = recaptcha.challenge(self.RECAPTCHA_KEY)
-
-        #: Submit the captcha solution
+        challenge, captcha = recaptcha.challenge('6LdlJuwSAAAAAPJbPIoUhyqOJd7-yrah5Nhim5S3')
+        # Submit the captcha solution
         self.load("http://www.uploadable.ch/checkReCaptcha.php",
+                  cookies=True,
                   post={'recaptcha_challenge_field'  : challenge,
-                        'recaptcha_response_field'   : response,
-                        'recaptcha_shortencode_field': self.info['pattern']['ID']})
+                        'recaptcha_response_field'   : captcha,
+                        'recaptcha_shortencode_field': self.info["pattern"]['ID']},
+                  decode=True)
 
         self.wait(3)
 
-        #: Get ready for downloading
-        self.load(pyfile.url, post={'downloadLink': "show"})
+        # Get ready for downloading
+        self.load(self.pyfile.url, cookies=True, post={'downloadLink': "show"}, decode=True)
 
         self.wait(3)
 
-        #: Download the file
-        self.download(pyfile.url, post={'download': "normal"}, disposition=True)
+        # Download the file
+        self.download(self.pyfile.url, cookies=True, post={'download': "normal"}, disposition=True)
 
 
-    def check_file(self):
-        if self.check_download({'wait': re.compile("Please wait for")}):
-            self.log_info(_("Downloadlimit reached, please wait or reconnect"))
+    def checkFile(self):
+        check = self.checkDownload({'wait_or_reconnect': re.compile("Please wait for"),
+                                    'is_html'          : re.compile("<head>")})
+
+        if check == "wait_or_reconnect":
+            self.logInfo("Downloadlimit reached, please wait or reconnect")
             self.wait(60 * 60, True)
             self.retry()
 
-        return super(UploadableCh, self).check_file()
+        elif check == "is_html":
+            self.error("Downloaded file is an html file")
 
 
 getInfo = create_getInfo(UploadableCh)
